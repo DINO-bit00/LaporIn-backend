@@ -3,6 +3,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import axios from 'axios';
+import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -14,7 +15,7 @@ app.use(cors({
   origin: [
     'http://localhost:5173',
     'http://localhost:3000',
-    process.env.FRONTEND_URL, // e.g. https://laporin.vercel.app
+    process.env.FRONTEND_URL,
   ].filter(Boolean),
   credentials: true,
 }));
@@ -31,9 +32,19 @@ const pool = new pg.Pool({
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
+// ===== AUTH CONFIG =====
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+const JWT_SECRET = process.env.JWT_SECRET || 'laporin-secret-key-2026';
+
 // ===== HUGGINGFACE CONFIG =====
-const HF_API_URL = process.env.HUGGINGFACE_API_URL; // e.g. https://your-space.hf.space/predict
-const HF_API_TOKEN = process.env.HUGGINGFACE_API_TOKEN; // optional, for auth
+const HF_API_URL = process.env.HUGGINGFACE_API_URL;
+const HF_API_TOKEN = process.env.HUGGINGFACE_API_TOKEN;
+
+// ===== HELPERS =====
+function capitalize(str) {
+  if (!str) return str;
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
 
 // ===== KAMUS KATA KRITIS (rule-based urgensi) =====
 const KATA_KRITIS = [
@@ -46,12 +57,28 @@ const KATA_KRITIS = [
 function hitungUrgensi(teks) {
   const lower = teks.toLowerCase();
   const matches = KATA_KRITIS.filter(kata => lower.includes(kata));
-  if (matches.length >= 3) return 2; // Tinggi
-  if (matches.length >= 1) return 1; // Sedang
-  return 0; // Rendah
+  if (matches.length >= 3) return 2;
+  if (matches.length >= 1) return 1;
+  return 0;
 }
 
-// ===== HUGGINGFACE AI CALL WITH RETRY (cold-start workaround) =====
+// ===== AUTH MIDDLEWARE =====
+function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Token tidak ditemukan' });
+  }
+  try {
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.admin = decoded;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Token tidak valid atau sudah expired' });
+  }
+}
+
+// ===== HUGGINGFACE AI CALL WITH RETRY =====
 async function callHuggingFaceAI(teks, retries = 3) {
   if (!HF_API_URL) {
     console.warn('HUGGINGFACE_API_URL belum di-set. Menggunakan fallback.');
@@ -68,14 +95,13 @@ async function callHuggingFaceAI(teks, retries = 3) {
       const response = await axios.post(
         HF_API_URL,
         { teks },
-        { headers, timeout: 120000 } // 120s timeout for cold-start
+        { headers, timeout: 120000 }
       );
       return response.data;
     } catch (err) {
       const status = err.response?.status;
-      // 503 = model loading (cold-start), retry
       if (status === 503 && attempt < retries) {
-        const wait = attempt * 10000; // 10s, 20s, 30s
+        const wait = attempt * 10000;
         console.log(`HuggingFace model loading (attempt ${attempt}/${retries}). Retry in ${wait / 1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
@@ -87,11 +113,10 @@ async function callHuggingFaceAI(teks, retries = 3) {
   return null;
 }
 
-// ===== WARM-UP PING (keep model awake) =====
+// ===== WARM-UP PING =====
 function startWarmUpPing() {
   if (!HF_API_URL) return;
-
-  const INTERVAL = 10 * 60 * 1000; // 10 menit
+  const INTERVAL = 10 * 60 * 1000;
   console.log(`🏓 Warm-up ping aktif: ping ke HuggingFace setiap 10 menit`);
 
   setInterval(async () => {
@@ -111,7 +136,9 @@ function startWarmUpPing() {
   }, INTERVAL);
 }
 
-// ===== ROUTES =====
+// =============================================================
+// ROUTES
+// =============================================================
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -121,6 +148,28 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// ===== AUTH ROUTES =====
+
+// POST /api/auth/login — Admin login
+app.post('/api/auth/login', (req, res) => {
+  const { password } = req.body;
+  if (!password) {
+    return res.status(400).json({ error: 'Password wajib diisi' });
+  }
+  if (password !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Password salah' });
+  }
+  const token = jwt.sign({ role: 'admin' }, JWT_SECRET, { expiresIn: '24h' });
+  res.json({ message: 'Login berhasil', token });
+});
+
+// GET /api/auth/verify — Verify token
+app.get('/api/auth/verify', authMiddleware, (req, res) => {
+  res.json({ valid: true, role: req.admin.role });
+});
+
+// ===== LAPORAN ROUTES =====
 
 // POST /api/laporan — Terima laporan baru
 app.post('/api/laporan', async (req, res) => {
@@ -141,8 +190,8 @@ app.post('/api/laporan', async (req, res) => {
     const aiResponse = await callHuggingFaceAI(teks);
     if (aiResponse) {
       hasilAI = {
-        kategori: aiResponse.kategori || hasilAI.kategori,
-        sentimen: aiResponse.sentimen || hasilAI.sentimen,
+        kategori: capitalize(aiResponse.kategori) || hasilAI.kategori,
+        sentimen: capitalize(aiResponse.sentimen) || hasilAI.sentimen,
         confidence: aiResponse.confidence || hasilAI.confidence,
       };
     }
@@ -160,6 +209,7 @@ app.post('/api/laporan', async (req, res) => {
         sentimen: hasilAI.sentimen,
         skor_urgensi: skor_urgensi,
         confidence: hasilAI.confidence,
+        status: 'Baru',
       },
     });
 
@@ -170,35 +220,105 @@ app.post('/api/laporan', async (req, res) => {
     });
   } catch (error) {
     console.error('Error POST /api/laporan:', error);
-    res.status(500).json({ error: 'Terjadi kesalahan pada server. Mohon coba beberapa saat lagi.' });
+    res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
   }
 });
 
-// GET /api/laporan — Daftar laporan
+// GET /api/laporan — Daftar laporan (with pagination, search, filter, sort)
 app.get('/api/laporan', async (req, res) => {
   try {
-    const { kategori, sentimen } = req.query;
+    const { kategori, sentimen, status, search, page, limit, sortBy, order } = req.query;
     const where = {};
-    if (kategori && kategori !== 'all') where.kategori = kategori;
-    if (sentimen && sentimen !== 'all') where.sentimen = sentimen;
 
-    const daftarLaporan = await prisma.laporan.findMany({
-      where,
-      orderBy: { tanggal: 'desc' },
+    if (kategori && kategori !== 'all') {
+      where.kategori = { equals: kategori, mode: 'insensitive' };
+    }
+    if (sentimen && sentimen !== 'all') {
+      where.sentimen = { equals: sentimen, mode: 'insensitive' };
+    }
+    if (status && status !== 'all') {
+      where.status = { equals: status, mode: 'insensitive' };
+    }
+    if (search) {
+      where.teks_asli = { contains: search, mode: 'insensitive' };
+    }
+
+    // Pagination
+    const pageNum = parseInt(page) || 1;
+    const limitNum = parseInt(limit) || 50;
+    const skip = (pageNum - 1) * limitNum;
+
+    // Sorting
+    const validSortFields = ['id', 'tanggal', 'kategori', 'sentimen', 'skor_urgensi', 'status'];
+    const sortField = validSortFields.includes(sortBy) ? sortBy : 'tanggal';
+    const sortOrder = order === 'asc' ? 'asc' : 'desc';
+
+    const [daftarLaporan, total] = await Promise.all([
+      prisma.laporan.findMany({
+        where,
+        orderBy: { [sortField]: sortOrder },
+        skip,
+        take: limitNum,
+      }),
+      prisma.laporan.count({ where }),
+    ]);
+
+    res.status(200).json({
+      data: daftarLaporan,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum),
+      },
     });
-    res.status(200).json({ data: daftarLaporan });
   } catch (error) {
     console.error('Error GET /api/laporan:', error);
     res.status(500).json({ error: 'Gagal mengambil data laporan.' });
   }
 });
 
-// GET /api/stats — Statistik agregat untuk dashboard
+// PATCH /api/laporan/:id — Update status & catatan (Admin only)
+app.patch('/api/laporan/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, catatan_admin } = req.body;
+
+    const updateData = {};
+    if (status) updateData.status = status;
+    if (catatan_admin !== undefined) updateData.catatan_admin = catatan_admin;
+
+    const updated = await prisma.laporan.update({
+      where: { id: parseInt(id) },
+      data: updateData,
+    });
+
+    res.json({ message: 'Laporan berhasil diperbarui', data: updated });
+  } catch (error) {
+    console.error('Error PATCH /api/laporan/:id:', error);
+    res.status(500).json({ error: 'Gagal memperbarui laporan.' });
+  }
+});
+
+// DELETE /api/laporan/:id — Hapus laporan (Admin only)
+app.delete('/api/laporan/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await prisma.laporan.delete({ where: { id: parseInt(id) } });
+    res.json({ message: 'Laporan berhasil dihapus' });
+  } catch (error) {
+    console.error('Error DELETE /api/laporan/:id:', error);
+    res.status(500).json({ error: 'Gagal menghapus laporan.' });
+  }
+});
+
+// ===== STATS ROUTES =====
+
+// GET /api/stats — Statistik agregat
 app.get('/api/stats', async (req, res) => {
   try {
     const totalLaporan = await prisma.laporan.count();
 
-    // Breakdown per kategori
     const kategoriRaw = await prisma.laporan.groupBy({
       by: ['kategori'],
       _count: { id: true },
@@ -208,7 +328,6 @@ app.get('/api/stats', async (req, res) => {
       if (r.kategori) kategori_breakdown[r.kategori] = r._count.id;
     });
 
-    // Breakdown per sentimen
     const sentimenRaw = await prisma.laporan.groupBy({
       by: ['sentimen'],
       _count: { id: true },
@@ -218,7 +337,6 @@ app.get('/api/stats', async (req, res) => {
       if (r.sentimen) sentimen_breakdown[r.sentimen] = r._count.id;
     });
 
-    // Breakdown per urgensi
     const urgensiRaw = await prisma.laporan.groupBy({
       by: ['skor_urgensi'],
       _count: { id: true },
@@ -228,15 +346,138 @@ app.get('/api/stats', async (req, res) => {
       if (r.skor_urgensi != null) urgensi_breakdown[r.skor_urgensi] = r._count.id;
     });
 
+    // Status breakdown
+    const statusRaw = await prisma.laporan.groupBy({
+      by: ['status'],
+      _count: { id: true },
+    });
+    const status_breakdown = {};
+    statusRaw.forEach((r) => {
+      if (r.status) status_breakdown[r.status] = r._count.id;
+    });
+
     res.status(200).json({
       total_laporan: totalLaporan,
       kategori_breakdown,
       sentimen_breakdown,
       urgensi_breakdown,
+      status_breakdown,
     });
   } catch (error) {
     console.error('Error GET /api/stats:', error);
     res.status(500).json({ error: 'Gagal mengambil data statistik.' });
+  }
+});
+
+// GET /api/stats/trend — Trend laporan 7 hari terakhir
+app.get('/api/stats/trend', async (req, res) => {
+  try {
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+
+    const laporan = await prisma.laporan.findMany({
+      where: { tanggal: { gte: sevenDaysAgo } },
+      select: { tanggal: true },
+    });
+
+    // Group by date
+    const trend = {};
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(sevenDaysAgo);
+      d.setDate(d.getDate() + i);
+      const key = d.toISOString().split('T')[0];
+      trend[key] = 0;
+    }
+    laporan.forEach((l) => {
+      const key = l.tanggal.toISOString().split('T')[0];
+      if (trend[key] !== undefined) trend[key]++;
+    });
+
+    const result = Object.entries(trend).map(([date, count]) => ({
+      date,
+      label: new Date(date).toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric' }),
+      count,
+    }));
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error GET /api/stats/trend:', error);
+    res.status(500).json({ error: 'Gagal mengambil data trend.' });
+  }
+});
+
+// GET /api/stats/keywords — Top kata kunci dari semua laporan
+app.get('/api/stats/keywords', async (req, res) => {
+  try {
+    const laporan = await prisma.laporan.findMany({
+      select: { teks_asli: true },
+    });
+
+    // Simple word frequency
+    const stopWords = new Set([
+      'yang', 'dan', 'di', 'ke', 'dari', 'ini', 'itu', 'untuk', 'dengan',
+      'pada', 'tidak', 'ada', 'akan', 'juga', 'sudah', 'saya', 'kami',
+      'mereka', 'bisa', 'atau', 'jika', 'oleh', 'karena', 'sangat',
+      'telah', 'belum', 'masih', 'agar', 'atas', 'bagi', 'dalam',
+      'apa', 'mohon', 'tolong', 'perlu', 'harus', 'lagi', 'lebih',
+      'sering', 'sekali', 'pernah', 'seperti', 'melalui', 'tentang',
+      'sebuah', 'tersebut', 'saat', 'sedang', 'semua', 'tapi',
+    ]);
+
+    const wordCount = {};
+    laporan.forEach((l) => {
+      const words = l.teks_asli.toLowerCase().replace(/[^a-zA-Z\s]/g, '').split(/\s+/);
+      words.forEach((word) => {
+        if (word.length > 3 && !stopWords.has(word)) {
+          wordCount[word] = (wordCount[word] || 0) + 1;
+        }
+      });
+    });
+
+    const top = Object.entries(wordCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15)
+      .map(([word, count]) => ({ word, count }));
+
+    res.json(top);
+  } catch (error) {
+    console.error('Error GET /api/stats/keywords:', error);
+    res.status(500).json({ error: 'Gagal mengambil keyword.' });
+  }
+});
+
+// GET /api/laporan/export — Export CSV
+app.get('/api/laporan/export', async (req, res) => {
+  try {
+    const laporan = await prisma.laporan.findMany({
+      orderBy: { tanggal: 'desc' },
+    });
+
+    // Build CSV
+    const headers = ['ID', 'Teks', 'Kategori', 'Sentimen', 'Urgensi', 'Status', 'Lokasi', 'Nama', 'Confidence', 'Catatan Admin', 'Tanggal'];
+    const rows = laporan.map((l) => [
+      l.id,
+      `"${(l.teks_asli || '').replace(/"/g, '""')}"`,
+      l.kategori || '',
+      l.sentimen || '',
+      l.skor_urgensi ?? '',
+      l.status || '',
+      l.lokasi || '',
+      l.nama || '',
+      l.confidence ?? '',
+      `"${(l.catatan_admin || '').replace(/"/g, '""')}"`,
+      l.tanggal?.toISOString() || '',
+    ].join(','));
+
+    const csv = [headers.join(','), ...rows].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=laporan_laporin.csv');
+    res.send('\uFEFF' + csv); // BOM for Excel UTF-8
+  } catch (error) {
+    console.error('Error GET /api/laporan/export:', error);
+    res.status(500).json({ error: 'Gagal export data.' });
   }
 });
 

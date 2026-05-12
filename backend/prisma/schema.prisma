@@ -7,14 +7,16 @@ datasource db {
 }
 
 model Laporan {
-  id           Int      @id @default(autoincrement())
-  teks_asli    String
-  teks_bersih  String?
-  nama         String?
-  lokasi       String?
-  kategori     String?
-  sentimen     String?
-  skor_urgensi Int?
-  confidence   Float?
-  tanggal      DateTime @default(now())
+  id            Int      @id @default(autoincrement())
+  teks_asli     String
+  teks_bersih   String?
+  nama          String?
+  lokasi        String?
+  kategori      String?
+  sentimen      String?
+  skor_urgensi  Int?
+  confidence    Float?
+  status        String   @default("Baru")
+  catatan_admin String?
+  tanggal       DateTime @default(now())
 }
