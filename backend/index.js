@@ -227,7 +227,7 @@ app.post('/api/laporan', async (req, res) => {
 // GET /api/laporan — Daftar laporan (with pagination, search, filter, sort)
 app.get('/api/laporan', async (req, res) => {
   try {
-    const { kategori, sentimen, status, search, page, limit, sortBy, order } = req.query;
+    const { kategori, sentimen, status, urgensi, search, page, limit, sortBy, order } = req.query;
     const where = {};
 
     if (kategori && kategori !== 'all') {
@@ -238,6 +238,9 @@ app.get('/api/laporan', async (req, res) => {
     }
     if (status && status !== 'all') {
       where.status = { equals: status, mode: 'insensitive' };
+    }
+    if (urgensi !== undefined && urgensi !== '' && urgensi !== 'all') {
+      where.skor_urgensi = parseInt(urgensi);
     }
     if (search) {
       where.teks_asli = { contains: search, mode: 'insensitive' };
