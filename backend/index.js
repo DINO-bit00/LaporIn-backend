@@ -243,7 +243,16 @@ app.get('/api/laporan', async (req, res) => {
       where.skor_urgensi = parseInt(urgensi);
     }
     if (search) {
-      where.teks_asli = { contains: search, mode: 'insensitive' };
+      const trimmed = search.trim();
+      // Kalau angka -> cari berdasarkan ID, kalau teks -> cari di teks_asli
+      if (/^\d+$/.test(trimmed)) {
+        where.OR = [
+          { id: parseInt(trimmed) },
+          { teks_asli: { contains: trimmed, mode: 'insensitive' } },
+        ];
+      } else {
+        where.teks_asli = { contains: trimmed, mode: 'insensitive' };
+      }
     }
 
     // Pagination
