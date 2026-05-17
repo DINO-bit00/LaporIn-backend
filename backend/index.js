@@ -117,7 +117,7 @@ async function callHuggingFaceAI(teks, retries = 3) {
 function startWarmUpPing() {
   if (!HF_API_URL) return;
   const INTERVAL = 10 * 60 * 1000;
-  console.log(`🏓 Warm-up ping aktif: ping ke HuggingFace setiap 10 menit`);
+  console.log(`Warm-up ping aktif: ping ke HuggingFace setiap 10 menit`);
 
   setInterval(async () => {
     try {
@@ -129,9 +129,9 @@ function startWarmUpPing() {
           timeout: 30000,
         }
       );
-      console.log('🏓 Warm-up ping: OK');
+      console.log('Warm-up ping: OK');
     } catch (err) {
-      console.log('🏓 Warm-up ping: model mungkin sedang loading -', err.message);
+      console.log('Warm-up ping: model mungkin sedang loading -', err.message);
     }
   }, INTERVAL);
 }
@@ -495,6 +495,6 @@ app.get('/api/laporan/export', async (req, res) => {
 
 // ===== START SERVER =====
 app.listen(port, () => {
-  console.log(`🚀 Server Backend LaporIn berjalan di http://localhost:${port}`);
+  console.log(`Server Backend LaporIn berjalan di http://localhost:${port}`);
   startWarmUpPing();
 });
