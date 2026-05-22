@@ -244,13 +244,13 @@ app.get('/api/laporan', async (req, res) => {
     }
     if (search) {
       const trimmed = search.trim();
-      // Kalau angka -> cari berdasarkan ID, kalau teks -> cari di teks_asli
-      if (/^\d+$/.test(trimmed)) {
-        where.OR = [
-          { id: parseInt(trimmed) },
-          { teks_asli: { contains: trimmed, mode: 'insensitive' } },
-        ];
+      // Jika input diawali '#' dan diikuti angka (misal '#2') ATAU hanya angka murni ('2')
+      // Kita fokus pencarian khusus untuk ID laporan saja.
+      if (/^#?\d+$/.test(trimmed)) {
+        const idSearch = parseInt(trimmed.replace('#', ''));
+        where.id = idSearch;
       } else {
+        // Jika teks biasa, cari di isi laporannya
         where.teks_asli = { contains: trimmed, mode: 'insensitive' };
       }
     }
